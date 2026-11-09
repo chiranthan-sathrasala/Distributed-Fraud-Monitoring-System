@@ -1,0 +1,9 @@
+# local only
+data/
+logs/
+*.log
+config/backup/
+__pycache__/
+*.pyc
+*.class
+.ipynb_checkpoints/
