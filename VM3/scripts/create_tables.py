@@ -1,44 +1,41 @@
-import argparse, re
-from pyspark.sql import SparkSession
+#!/usr/bin/env python3
+"""Create the two Iceberg tables for a run (schemas come from common/schemas.py).
+
+usage (on VM3, see VM3/scripts/create_run.sh):  create_tables.py --run run1
+"""
+import argparse
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from pyspark.sql import SparkSession  # noqa: E402
+
+from common import schemas  # noqa: E402
 
 p = argparse.ArgumentParser()
 p.add_argument("--run", default="run1", help="run name, e.g. run1")
-run = p.parse_args().run
+p.add_argument("--catalog", default=os.environ.get("ICEBERG_CATALOG", "iceberg_catalog"))
+p.add_argument("--db", default=os.environ.get("ICEBERG_DB", "fraud"))
+args = p.parse_args()
+run = args.run
 if not re.fullmatch(r"run[0-9a-z]+", run):
     raise SystemExit("Run name must look like run1, run2, run1b ...")
 
 spark = SparkSession.builder.appName(f"create_tables_{run}").getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
-cat = "iceberg_catalog.fraud"
+decisions, alerts = schemas.table_names(run, args.catalog, args.db)
 
 steps = [
-    ("namespace", f"CREATE NAMESPACE IF NOT EXISTS {cat}"),
-    ("transaction_decisions", f"""
-        CREATE TABLE IF NOT EXISTS {cat}.transaction_decisions_{run} (
-          transaction_id STRING, source_account STRING, destination_account STRING,
-          event_timestamp TIMESTAMP, evaluated_at TIMESTAMP,
-          amount DECIMAL(18,2), currency STRING,
-          r1_triggered BOOLEAN, r2_triggered BOOLEAN, r3_triggered BOOLEAN, r4_triggered BOOLEAN,
-          r5_risk_score INT, r5_block_triggered BOOLEAN, decision STRING,
-          related_alert_ids ARRAY<STRING>
-        ) USING iceberg"""),
-    ("account_risk_alerts", f"""
-        CREATE TABLE IF NOT EXISTS {cat}.account_risk_alerts_{run} (
-          alert_id STRING, rule_id STRING, source_account STRING, destination_account STRING,
-          trigger_transaction_id STRING, finding_scope STRING,
-          window_start TIMESTAMP, window_end TIMESTAMP,
-          observed_count INT, observed_amount_inr DECIMAL(18,2),
-          count_threshold INT, amount_threshold_inr DECIMAL(18,2),
-          supporting_transaction_ids ARRAY<STRING>, explanation STRING,
-          triggered_at TIMESTAMP
-        ) USING iceberg"""),
+    ("namespace", f"CREATE NAMESPACE IF NOT EXISTS {args.catalog}.{args.db}"),
+    ("transaction_decisions", f"CREATE TABLE IF NOT EXISTS {decisions} ({schemas.DECISIONS_COLUMNS}) USING iceberg"),
+    ("account_risk_alerts", f"CREATE TABLE IF NOT EXISTS {alerts} ({schemas.ALERTS_COLUMNS}) USING iceberg"),
 ]
-
 for i, (name, sql) in enumerate(steps, 1):
     print(f"[{i}/{len(steps)}] creating {name} ...", flush=True)
     spark.sql(sql)
 
-for t in (f"transaction_decisions_{run}", f"account_risk_alerts_{run}"):
-    n = spark.sql(f"SELECT count(*) FROM {cat}.{t}").first()[0]
-    print(f"OK  {cat}.{t}  rows={n}")
+for t in (decisions, alerts):
+    n = spark.sql(f"SELECT count(*) FROM {t}").first()[0]
+    print(f"OK  {t}  rows={n}")
 spark.stop()
